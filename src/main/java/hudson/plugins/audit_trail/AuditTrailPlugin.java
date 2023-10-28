@@ -23,9 +23,6 @@
  */
 package hudson.plugins.audit_trail;
 
-import static hudson.plugins.audit_trail.BypassablePatternMonitor.isLegacyBypassableDefaultPattern;
-import static hudson.plugins.audit_trail.BypassablePatternMonitor.validatePatternAgainstKnownKeywords;
-
 import hudson.DescriptorExtensionList;
 import hudson.Extension;
 import hudson.Util;
@@ -33,18 +30,8 @@ import hudson.XmlFile;
 import hudson.model.AbstractBuild;
 import hudson.model.Descriptor;
 import hudson.model.Run;
+import hudson.plugins.audit_trail.rule.Rule;
 import hudson.util.FormValidation;
-import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
-import java.util.logging.Logger;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
-import javax.servlet.ServletException;
 import jenkins.model.GlobalConfiguration;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
@@ -54,6 +41,17 @@ import org.kohsuke.accmod.restrictions.DoNotUse;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+
+import javax.servlet.ServletException;
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+import java.util.logging.Logger;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+
+import static hudson.plugins.audit_trail.BypassablePatternMonitor.isLegacyBypassableDefaultPattern;
+import static hudson.plugins.audit_trail.BypassablePatternMonitor.validatePatternAgainstKnownKeywords;
 
 /**
  * Keep audit trail of particular Jenkins operations, such as configuring jobs.
@@ -65,200 +63,142 @@ import org.kohsuke.stapler.StaplerRequest;
 @Extension
 public class AuditTrailPlugin extends GlobalConfiguration {
 
-    private static final Logger LOGGER = Logger.getLogger(AuditTrailPlugin.class.getName());
-    private boolean logBuildCause = true;
-    private boolean displayUserName = false;
-    private boolean logCredentialsUsage = true;
-    private List<AuditLogger> loggers = new ArrayList<>();
+  private static final Logger LOGGER = Logger.getLogger(AuditTrailPlugin.class.getName());
+  private boolean displayUserName = false;
+  private final List<Rule> rules = new ArrayList<>();
 
-    private transient String log;
+  private transient String log;
 
-    private static final List<String> KNOWN_KEYWORDS = Arrays.asList(
-            "configSubmit",
-            "doDelete",
-            "postBuildResult",
-            "enable",
-            "disable",
-            "cancelQueue",
-            "stop",
-            "toggleLogKeep",
-            "doWipeOutWorkspace",
-            "createItem",
-            "createView",
-            "toggleOffline",
-            "cancelQuietDown",
-            "quietDown",
-            "restart",
-            "exit",
-            "safeExit");
+  private static final List<String> KNOWN_KEYWORDS = Arrays.asList(
+          "configSubmit",
+          "doDelete",
+          "postBuildResult",
+          "enable",
+          "disable",
+          "cancelQueue",
+          "stop",
+          "toggleLogKeep",
+          "doWipeOutWorkspace",
+          "createItem",
+          "createView",
+          "toggleOffline",
+          "cancelQuietDown",
+          "quietDown",
+          "restart",
+          "exit",
+          "safeExit");
 
-    static final String DEFAULT_PATTERN = ".*/(?:" + String.join("|", KNOWN_KEYWORDS) + ")/?.*";
-    private String pattern = DEFAULT_PATTERN;
+  static final String DEFAULT_PATTERN = ".*/(?:" + String.join("|", KNOWN_KEYWORDS) + ")/?.*";
+  private String pattern = DEFAULT_PATTERN;
 
-    public String getPattern() {
-        return pattern;
+  public String getPattern() {
+    return pattern;
+  }
+
+  public List<Rule> getRules() {
+    return rules;
+  }
+
+  public boolean shouldDisplayUserName() {
+    return displayUserName;
+  }
+
+  public AuditTrailPlugin() {
+    load();
+  }
+
+  @Override
+  public boolean configure(StaplerRequest req, JSONObject formData) {
+    // readResolve makes sure loggers is initialized, so it should never be null.
+    // TODO this should probably be moved somewhere else
+    // TODO add back logger cleanup, we'd currently have a lock leak here
+    // loggers.forEach(AuditLogger::cleanUp);
+    req.bindJSON(this, formData);
+    return true;
+  }
+
+  void resetPattern() {
+    LOGGER.info("Reset the default pattern");
+    pattern = DEFAULT_PATTERN;
+  }
+
+  static List<String> getKnownKeywords() {
+    return Collections.unmodifiableList(KNOWN_KEYWORDS);
+  }
+
+  @DataBoundSetter
+  public void setDisplayUserName(boolean displayUserName) {
+    this.displayUserName = displayUserName;
+    save();
+  }
+
+  @DataBoundSetter
+  public void setRules(List<Rule> rules) {
+    this.rules.addAll(Optional.ofNullable(rules).orElse(Collections.emptyList()));
+    save();
+  }
+
+  /**
+   * @deprecated as of 2.6
+   **/
+  @Deprecated
+  public DescriptorExtensionList<AuditLogger, Descriptor<AuditLogger>> getLoggerDescriptors() {
+    return AuditLogger.all();
+  }
+
+  /**
+   * @deprecated as of 2.6
+   **/
+  @Restricted(DoNotUse.class)
+  @Deprecated
+  public void onFinalized(Run run) {
+    LOGGER.warning("AuditTrailPlugin#onFinalized does nothing anymore, please update your script");
+  }
+
+  /**
+   * @deprecated as of 2.6
+   **/
+  @Restricted(DoNotUse.class)
+  @Deprecated
+  public void onFinalized(AbstractBuild build) {
+    LOGGER.warning("AuditTrailPlugin#onFinalized does nothing anymore, please update your script");
+  }
+
+  /**
+   * Backward compatibility
+   */
+  private Object readResolve() {
+//        if (log != null) {
+//            if (loggers == null) {
+//                loggers = new ArrayList<>();
+//            }
+//            LogFileAuditLogger logger = new LogFileAuditLogger(log, 1, 1, null);
+//            if (!loggers.contains(logger)) loggers.add(logger);
+//            log = null;
+//        }
+    return this;
+  }
+
+  /**
+   * Validate regular expression syntax.
+   */
+  public FormValidation doRegexCheck(@QueryParameter final String value) throws IOException, ServletException {
+    // No permission needed for simple syntax check
+    try {
+      Pattern.compile(value);
+    } catch (PatternSyntaxException ex) {
+      // SECURITY-1722: As the exception message will contain the user input Pattern,
+      // it needs to be escaped to prevent an XSS attack
+      return FormValidation.errorWithMarkup("Invalid <a href=\""
+              + "https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html"
+              + "\">regular expression</a> (" + Util.escape(ex.getMessage()) + ")");
     }
+    // also validate pattern against SECURITY-1846
+    return validatePatternAgainstKnownKeywords(value);
+  }
 
-    @Deprecated
-    /**
-     * @deprecated as of 3.6
-     * Use the {@link #shouldLogBuildCause()} method.
-     **/
-    public boolean getLogBuildCause() {
-        return shouldLogBuildCause();
-    }
-
-    public boolean shouldLogBuildCause() {
-        return logBuildCause;
-    }
-
-    public boolean getLogCredentialsUsage() {
-        return shouldLogCredentialsUsage();
-    }
-
-    public boolean shouldLogCredentialsUsage() {
-        return logCredentialsUsage;
-    }
-
-    public boolean shouldDisplayUserName() {
-        return displayUserName;
-    }
-
-    public boolean getDisplayUserName() {
-        return shouldDisplayUserName();
-    }
-
-    public List<AuditLogger> getLoggers() {
-        return loggers;
-    }
-
-    public AuditTrailPlugin() {
-        load();
-    }
-
-    @Override
-    public boolean configure(StaplerRequest req, JSONObject formData) {
-        // readResolve makes sure loggers is initialized, so it should never be null.
-        // TODO this should probably be moved somewhere else
-        loggers.forEach(AuditLogger::cleanUp);
-        req.bindJSON(this, formData);
-        return true;
-    }
-
-    @DataBoundSetter
-    public void setPattern(String pattern) {
-        if (isLegacyBypassableDefaultPattern(pattern)) {
-            LOGGER.warning("Found a legacy vulnerable pattern, will use the default pattern");
-            resetPattern();
-        } else {
-            this.pattern = Optional.ofNullable(pattern).orElse("");
-        }
-        updateFilterPattern();
-        save();
-    }
-
-    void resetPattern() {
-        LOGGER.info("Reset the default pattern");
-        pattern = DEFAULT_PATTERN;
-    }
-
-    static List<String> getKnownKeywords() {
-        return Collections.unmodifiableList(KNOWN_KEYWORDS);
-    }
-
-    @DataBoundSetter
-    public void setLogBuildCause(boolean logBuildCause) {
-        this.logBuildCause = logBuildCause;
-        save();
-    }
-
-    @DataBoundSetter
-    public void setLogCredentialsUsage(boolean logCredentialsUsage) {
-        this.logCredentialsUsage = logCredentialsUsage;
-        save();
-    }
-
-    @DataBoundSetter
-    public void setDisplayUserName(boolean displayUserName) {
-        this.displayUserName = displayUserName;
-        save();
-    }
-
-    private void updateFilterPattern() {
-        try {
-            AuditTrailFilter.setPattern(pattern);
-        } catch (PatternSyntaxException ex) {
-            ex.printStackTrace();
-        }
-    }
-
-    /**
-     * @deprecated as of 2.6
-     **/
-    @Deprecated
-    public DescriptorExtensionList<AuditLogger, Descriptor<AuditLogger>> getLoggerDescriptors() {
-        return AuditLogger.all();
-    }
-
-    @DataBoundSetter
-    public void setLoggers(List<AuditLogger> loggers) {
-        this.loggers = Optional.ofNullable(loggers).orElse(Collections.emptyList());
-    }
-
-    /**
-     * @deprecated as of 2.6
-     **/
-    @Restricted(DoNotUse.class)
-    @Deprecated
-    public void onFinalized(Run run) {
-        LOGGER.warning("AuditTrailPlugin#onFinalized does nothing anymore, please update your script");
-    }
-
-    /**
-     * @deprecated as of 2.6
-     **/
-    @Restricted(DoNotUse.class)
-    @Deprecated
-    public void onFinalized(AbstractBuild build) {
-        LOGGER.warning("AuditTrailPlugin#onFinalized does nothing anymore, please update your script");
-    }
-
-    /**
-     * Backward compatibility
-     */
-    private Object readResolve() {
-        if (log != null) {
-            if (loggers == null) {
-                loggers = new ArrayList<>();
-            }
-            LogFileAuditLogger logger = new LogFileAuditLogger(log, 1, 1, null);
-            if (!loggers.contains(logger)) loggers.add(logger);
-            log = null;
-        }
-        updateFilterPattern();
-        return this;
-    }
-
-    /**
-     * Validate regular expression syntax.
-     */
-    public FormValidation doRegexCheck(@QueryParameter final String value) throws IOException, ServletException {
-        // No permission needed for simple syntax check
-        try {
-            Pattern.compile(value);
-        } catch (PatternSyntaxException ex) {
-            // SECURITY-1722: As the exception message will contain the user input Pattern,
-            // it needs to be escaped to prevent an XSS attack
-            return FormValidation.errorWithMarkup("Invalid <a href=\""
-                    + "https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html"
-                    + "\">regular expression</a> (" + Util.escape(ex.getMessage()) + ")");
-        }
-        // also validate pattern against SECURITY-1846
-        return validatePatternAgainstKnownKeywords(value);
-    }
-
-    @Override
-    protected XmlFile getConfigFile() {
-        return new XmlFile(new File(Jenkins.get().getRootDir(), "audit-trail.xml"));
-    }
+  @Override
+  protected XmlFile getConfigFile() {
+    return new XmlFile(new File(Jenkins.get().getRootDir(), "audit-trail.xml"));
+  }
 }

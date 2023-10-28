@@ -9,8 +9,14 @@ import hudson.Extension;
 import hudson.model.Item;
 import hudson.model.Node;
 import hudson.model.Run;
+import hudson.plugins.audit_trail.rule.CredentialRule;
+import hudson.plugins.audit_trail.rule.JobRule;
+import hudson.plugins.audit_trail.rule.Rule;
+
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import javax.inject.Inject;
 
 /**
@@ -37,14 +43,16 @@ public class CredentialUsageListener implements CredentialsUseListener {
      */
     @Override
     public void onUse(Credentials c, Run run) {
-        if (!configuration.shouldLogCredentialsUsage()) return;
+        var credentialRules = getCredentialRules();
 
-        StringBuilder builder = new StringBuilder(100);
+        if (!credentialRules.isEmpty()) {
+            StringBuilder builder = new StringBuilder(100);
 
-        String runName = run.getExternalizableId();
-        String runType = run.getClass().toString();
-        builder.append(String.format("'%s' (%s) ", runName, runType));
-        auditLog(c, builder);
+            String runName = run.getExternalizableId();
+            String runType = run.getClass().toString();
+            builder.append(String.format("'%s' (%s) ", runName, runType));
+            auditLog(c, builder);
+        }
     }
 
     /**
@@ -57,14 +65,16 @@ public class CredentialUsageListener implements CredentialsUseListener {
      */
     @Override
     public void onUse(Credentials c, Node node) {
-        if (!configuration.shouldLogCredentialsUsage()) return;
+        var credentialRules = getCredentialRules();
 
-        StringBuilder builder = new StringBuilder(100);
+        if (!credentialRules.isEmpty()) {
+            StringBuilder builder = new StringBuilder(100);
 
-        String nodeName = node.getNodeName();
-        String nodeType = node.getClass().toString();
-        builder.append(String.format("'%s' (%s) ", nodeName, nodeType));
-        auditLog(c, builder);
+            String nodeName = node.getNodeName();
+            String nodeType = node.getClass().toString();
+            builder.append(String.format("'%s' (%s) ", nodeName, nodeType));
+            auditLog(c, builder);
+        }
     }
 
     /**
@@ -77,14 +87,22 @@ public class CredentialUsageListener implements CredentialsUseListener {
      */
     @Override
     public void onUse(Credentials c, Item item) {
-        if (!configuration.shouldLogCredentialsUsage()) return;
+        var credentialRules = getCredentialRules();
+        if (!credentialRules.isEmpty()) {
+            StringBuilder builder = new StringBuilder(100);
 
-        StringBuilder builder = new StringBuilder(100);
+            String runName = item.getFullName();
+            String itemType = item.getClass().toString();
+            builder.append(String.format("'%s' (%s) ", runName, itemType));
+            auditLog(c, builder);
+        }
+    }
 
-        String runName = item.getFullName();
-        String itemType = item.getClass().toString();
-        builder.append(String.format("'%s' (%s) ", runName, itemType));
-        auditLog(c, builder);
+    private List<CredentialRule> getCredentialRules() {
+        return configuration.getRules().stream()
+                .filter(rule -> rule.getItem() == Rule.Item.CREDENTIAL)
+                .map(rule -> (CredentialRule) rule)
+                .collect(Collectors.toList());
     }
 
     private void auditLog(Credentials c, StringBuilder builder) {
@@ -110,8 +128,14 @@ public class CredentialUsageListener implements CredentialsUseListener {
             LOGGER.log(Level.FINE, "Detected credential usage, details: {0}", new Object[] {log});
         }
 
-        for (AuditLogger logger : configuration.getLoggers()) {
+        for (AuditLogger logger : getLoggers(getCredentialRules())) {
             logger.log(log);
         }
+    }
+
+    private static List<AuditLogger> getLoggers(List<CredentialRule> credentialRules) {
+        return credentialRules.stream()
+                .flatMap(rule -> rule.getLoggers().stream())
+                .collect(Collectors.toList());
     }
 }

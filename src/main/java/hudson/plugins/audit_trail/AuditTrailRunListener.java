@@ -10,6 +10,10 @@ import hudson.model.ParametersAction;
 import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.model.listeners.RunListener;
+import hudson.plugins.audit_trail.rule.JobRule;
+import hudson.plugins.audit_trail.rule.Rule;
+
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import javax.inject.Inject;
@@ -31,25 +35,40 @@ public class AuditTrailRunListener extends RunListener<Run> {
 
     @Override
     public void onStarted(Run run, TaskListener listener) {
-        if (configuration.shouldLogBuildCause()) {
+        var jobRules = getJobRules();
+        if (!jobRules.isEmpty()) {
             StringBuilder builder = new StringBuilder(100);
             dumpCauses(run, builder);
             dumpParameters(run, builder);
 
-            for (AuditLogger logger : configuration.getLoggers()) {
+            for (AuditLogger logger : getLoggers(jobRules)) {
                 logger.log(run.getParent().getUrl() + " #" + run.getNumber() + ' ' + builder.toString());
             }
         }
     }
 
+    private List<JobRule> getJobRules() {
+        return configuration.getRules().stream()
+                .filter(rule -> rule.getItem() == Rule.Item.JOB)
+                .map(rule -> (JobRule) rule)
+                .collect(Collectors.toList());
+    }
+
+    private static List<AuditLogger> getLoggers(List<JobRule> jobRules) {
+        return jobRules.stream()
+                .flatMap(rule -> rule.getLoggers().stream())
+                .collect(Collectors.toList());
+    }
+
     @Override
     public void onFinalized(Run run) {
-        if (configuration.shouldLogBuildCause()) {
+        var jobRules = getJobRules();
+        if (!jobRules.isEmpty()) {
             StringBuilder builder = new StringBuilder(100);
             dumpCauses(run, builder);
             dumpParameters(run, builder);
 
-            for (AuditLogger logger : configuration.getLoggers()) {
+            for (AuditLogger logger : getLoggers(jobRules)) {
                 String message = run.getFullDisplayName() + " "
                         + builder.toString() + " on node "
                         + buildNodeName(run) + " started at "

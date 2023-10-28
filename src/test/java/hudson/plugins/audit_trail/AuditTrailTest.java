@@ -79,7 +79,7 @@ public class AuditTrailTest {
         new SimpleAuditTrailPluginConfiguratorHelper(logFile).sendConfiguration(j, wc);
 
         AuditTrailPlugin plugin = GlobalConfiguration.all().get(AuditTrailPlugin.class);
-        LogFileAuditLogger logger = (LogFileAuditLogger) plugin.getLoggers().get(0);
+        LogFileAuditLogger logger = (LogFileAuditLogger) pluginc.getLoggers().get(0);
         assertEquals("log path", logFile.getPath(), logger.getLog());
         assertEquals("log size", 1, logger.getLimit());
         assertEquals("log count", 2, logger.getCount());
